@@ -23,20 +23,39 @@ class Server(BaseFedarated):
         print('Using Group prox to Train')
         self.group_list = [] # list of Group() instance
         self.group_ids = [] # list of group id
+
+        # The attrs will be set in BaseFedarated.__init__(),
+        # We repeat this assigement for clarification.
         self.num_group = params['num_group']
         self.prox = params['proximal']
         self.group_min_clients = params['min_clients']
         self.allow_empty = params['allow_empty']
         self.evenly = params['evenly']
-        self.sklearn_seed = params['seed']
+        self.seed = params['seed']
+        self.sklearn_seed = params['sklearn_seed']
         self.agg_lr = params['agg_lr']
         self.RAC = params['RAC'] # Randomly Assign Clients
         self.RCC = params['RCC'] # Random Cluster Center
+
+        """
+        We implement THREE run mode of FedGroup: 
+            1) Ours FedGroup
+            2) IFCA: "An Efficient Framework for Clustered Federated Learning"
+            3) FeSEM: "Multi-Center Federated Learning"
+        """
+        self.run_mode = 'FedGroup'
+        if params['ifca'] == True:
+            self.run_mode = 'IFCA'
+        if params['fesem'] == True:
+            self.run_mode = 'FeSEM'
+
         if self.prox == True:
             self.inner_opt = PerturbedGradientDescent(params['learning_rate'], params['mu'])
         else:
             self.inner_opt = tf.train.GradientDescentOptimizer(params['learning_rate'])
+        
         super(Server, self).__init__(params, learner, dataset)
+
         self.latest_model = self.client_model.get_params() # The global AVG model
         self.latest_update = self.client_model.get_params()
 
@@ -110,13 +129,38 @@ class Server(BaseFedarated):
         
         if random_centers == True:
             # Strategy #1: random pre-train num_group clients as cluster centers
-            selected_clients = random.sample(self.clients, k=self.num_group)
-            for c, g in zip(selected_clients, self.group_list):
-                g.latest_model, g.latest_update = self.pre_train_client(c)
-                c.set_group(g)
+            # It is an optional strategy of FedGroup, named FedGroup-RCC
+            if self.run_mode == 'FedGroup':
+                selected_clients = random.sample(self.clients, k=self.num_group)
+                for c, g in zip(selected_clients, self.group_list):
+                    g.latest_model, g.latest_update = self.pre_train_client(c)
+                    c.set_group(g)
+
+            # Strategy #2: random initialize group models as centers
+            # <IFCA> and <FeSEM> use this strategy.
+            if self.run_mode == 'IFCA' or self.run_mode == 'FeSEM':
+                # Backup the original model params
+                backup_params = self.client_model.get_params()
+                # Reinitialize num_group clients models as centers models
+                for idx, g in enumerate(self.group_list):
+                    # Change the seed of tensorflow
+                    tf.set_random_seed(idx*666 + self.seed)
+                    # Reinitialize params of model
+                    self.client_model.sess.run(tf.global_variables_initializer())
+                    new_params = self.client_model.get_params()
+                    g.latest_model, g.latest_update = new_params, new_params
+
+                # Restore the seed of tensorflow
+                tf.set_random_seed(123 + self.seed)
+                # Reinitialize for insurance purposes
+                self.client_model.sess.run(tf.global_variables_initializer())
+                # Restore the weights of model
+                self.client_model.set_params(backup_params)
+            
         
         if random_centers == False:
-            # Strategy #2: Pre-train, then clustering the directions of clients' weights
+            # Strategy #3: Pre-train, then clustering the directions of clients' weights
+            # <FedGroup> and <FedGrouProx> use this strategy
             alpha = 20
             selected_clients = random.sample(self.clients, k=min(self.num_group*alpha, len(self.clients)))
 
@@ -264,6 +308,7 @@ class Server(BaseFedarated):
             results.append((ids, g, num_samples, tot_correct, losses))
         self.client_model.set_params(backup_model) # Recovery the model
         return results
+
 
     def train(self):
         print('Training with {} workers ---'.format(self.clients_per_round))
@@ -413,6 +458,7 @@ class Server(BaseFedarated):
 
     def reschedule_groups(self, selected_clients, allow_empty=False, evenly=False, randomly=False):
         
+        # deprecated
         def _get_even_per_group_num(selected_clients_num, group_num):
             per_group_num = np.array([selected_clients_num // group_num] * group_num)
             remain = selected_clients_num - sum(per_group_num)

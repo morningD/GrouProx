@@ -21,7 +21,7 @@ class Model(object):
         # create computation graph        
         self.graph = tf.Graph()
         with self.graph.as_default():
-            tf.set_random_seed(123+seed)
+            # tf.set_random_seed(123+seed) # We set this seed outside.
             self.features, self.labels, self.train_op, self.grads, self.eval_metric_ops, self.loss = self.create_model(optimizer)
             self.saver = tf.train.Saver()
         self.sess = tf.Session(graph=self.graph)
