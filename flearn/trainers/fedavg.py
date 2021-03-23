@@ -45,6 +45,7 @@ class Server(BaseFedarated):
                     flat_cmodels = [process_grad(soln[1]) for soln in csolns]
                     flat_global_model = process_grad(self.latest_model)
                     diffs[0] = np.sum([np.sum((flat_model-flat_global_model)**2)**0.5 for flat_model in flat_cmodels])
+                    diffs[0] = diffs[0] / len(csolns)
                 self.writer.write_diffs(diffs)
                 tqdm.write('At round {} Discrepancy: {}'.format(i, diffs[0]))
 

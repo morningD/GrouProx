@@ -4,6 +4,12 @@ class Client(object):
     
     def __init__(self, id, group=None, train_data={'x':[],'y':[]}, eval_data={'x':[],'y':[]}, model=None):
         self.model = model
+        
+        # The local model params and updates of this client,
+        # local_model and local_update only can be fresh by train() function of Group, pre-train will no change it
+        self.local_model = model.get_params()
+        self.local_update = model.get_params()
+
         self.id = id # string
         self.group = group # Group() instant
         self.train_data = {k: np.array(v) for k, v in train_data.items()}
@@ -11,7 +17,7 @@ class Client(object):
         self.num_samples = len(self.train_data['y'])
         self.test_samples = len(self.eval_data['y'])
         self.difference = [] # tuple of (group, diff)
-        self.clustering = False # Is the client join the clustering proceudre.
+        self.clustering = False # Is the client join the clustering proceudre.(FedGroup only)
 
     def set_params(self, model_params):
         '''set model parameters'''

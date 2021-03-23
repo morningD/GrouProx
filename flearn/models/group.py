@@ -75,7 +75,7 @@ class Group(object):
     """ Aggregate the models of this group """
     def aggregate(self, wsolns):
         total_weight = 0.0
-        base = [0]*len(wsolns[0][1]) # wsolns ->(n_k, soln), (bytes_w, comp, bytes_r)
+        base = [0]*len(wsolns[0][1]) # wsolns ->[(n_k, soln), ...]
         for (w, soln) in wsolns:  # w is the number of local samples
             total_weight += w
             for i, v in enumerate(soln): # for each w_i in w
@@ -85,7 +85,12 @@ class Group(object):
 
         return averaged_soln
 
-    def train(self):
+    def average_aggregate(self, wsolns):
+        # Set weights to 1.0, all equal
+        solns = [(1.0, soln) for (_, soln) in wsolns]
+        return self.aggregate(solns)
+
+    def train(self, run_mode='FedGroup'):
 
         """ Pre test the diff of gradient """
         """
@@ -111,18 +116,38 @@ class Group(object):
 
         csolns = [] # buffer for receiving client solutions
         cupdates_dict = {} # dict buffer for send back clients' updates to server
+        cmodels_dict = {} # dict buffer for send back clients' models to server
         for c in self.clients.values():
             # communicate the latest group model
             c.set_params(self.latest_model)
             soln, stats = c.solve_inner(num_epochs=self.num_epochs, batch_size=self.batch_size)
-            csolns.append(soln)
-            cupdates_dict[c] = [w1-w0 for w0, w1 in zip(self.latest_update, soln[1])] # {Client:updates}
-        new_model = self.aggregate(csolns)
+            
+            # fresh the local model and local update of client
+            c.local_model = soln[1]
+            c.local_update = [w1-w0 for w0, w1 in zip(self.latest_model, soln[1])]
+
+            csolns.append(soln) # ->[(self.num_samples, soln), ...]
+            cmodels_dict[c] = c.local_model # {Client:models}
+            cupdates_dict[c] = c.local_update # {Client:updates}
+
+        if run_mode == 'FedGroup':
+            new_model = self.aggregate(csolns)
+        elif run_mode == 'IFCA':
+            # We implement model averaging version of IFCA
+            new_model = self.average_aggregate(csolns)
+            # TODO: gradient averaging version of IFCA
+            pass
+        elif run_mode == 'FeSEM':
+            new_model = self.average_aggregate(csolns)
+        else:
+            # Default use weighted averaging
+            new_model = self.aggregate(csolns)
+
         self.latest_update = [w1-w0 for w0, w1 in zip(self.latest_model, new_model)]
         self.latest_model = new_model
 
         self.client_model.set_params(start_model) # Recovery the training model
 
-        return cupdates_dict # return {Client:updates} to server
+        return cmodels_dict, cupdates_dict # return {Client:updates} to server
 
 

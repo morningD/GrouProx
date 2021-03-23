@@ -78,13 +78,28 @@ class Server(BaseFedarated):
             np.sqrt(np.sum(flat_m1**2)) * np.sqrt(np.sum(flat_m2**2)))
         return cosine
 
-    """ measure the difference between client_model and group_model """
-    def measure_difference(self, client_model, group_model):
-        # Strategy #1: angles (cosine) between two vectors
-        diff = self._get_cosine_similarity(client_model, group_model)
-        diff = 1.0 - ((diff + 1.0) / 2.0) # scale to [0, 1] then flip
-        # Strategy #2: Euclidean distance between two vectors
-        # diff = np.sum((client_model - group_model)**2)
+    """ measure the difference between client and group """
+    def measure_difference(self, client, group, run_mode):
+        # Strategy #1: angles (cosine) between two client update and group update
+        # FedGroup use this.
+        if run_mode == 'FedGroup':
+            # FedGroup need pretrain the client
+            cmodel, cupdate = self.pre_train_client(client)
+            diff = self._get_cosine_similarity(cupdate, group.latest_update)
+            diff = 1.0 - ((diff + 1.0) / 2.0) # scale to [0, 1] then flip
+        
+        # Strategy #2: Euclidean distance between client model and group model
+        # FeSEM use this.
+        if run_mode == 'FeSEM':
+            diff = np.sum((cmodel - group.latest_model)**2)
+
+        # Strategy #3: Training Loss of group model
+        # IFCA use this.
+        if run_mode == 'IFCA':
+            # Evaluate the client to get the training loss
+            _, train_loss, _ = client.train_error_and_loss()
+            diff = train_loss
+
         return diff
 
     def get_ternary_cosine_similarity_matrix(self, w, V):
@@ -97,85 +112,96 @@ class Server(BaseFedarated):
         diffs = (-diffs+1.)/2. # Normalize to [0,1]
         return diffs
 
-    def client_cold_start(self, client):
-        if client.group is not None:
-            print("Warning: Client already has a group: {:2d}.".format(client.group))
-        
-        # Training is base on the global avg model
-        start_model = self.client_model.get_params() # Backup the model first
-        self.client_model.set_params(self.latest_model) # Set the training model to global avg model
-        
-        client_model, client_update = self.pre_train_client(client)
+    def get_assign_group(self, client, run_mode):
         diff_list = [] # tuple of (group, diff)
         for g in self.group_list:
-            diff_g = self.measure_difference(client_update, g.latest_update)
+            diff_g = self.measure_difference(client, g, run_mode)
             diff_list.append((g, diff_g)) # w/o sort
-        
-        # update(Init) the diff list of client
-        client.update_difference(diff_list)
 
         #print("client:", client.id, "diff_list:", diff_list)
         assign_group = self.group_list[np.argmin([tup[1] for tup in diff_list])]
-        # Only set the group attr of client, do not actually add clients to the group
-        client.set_group(assign_group)
-        
-        # Recovery the training model
-        self.client_model.set_params(start_model)
 
-        return
+        return diff_list, assign_group
+        
+
+    def client_cold_start(self, client, run_mode):
+        if client.group is not None:
+            print("Warning: Client already has a group: {:2d}.".format(client.group))
+        
+        if run_mode == 'FedGroup':
+            # Training is base on the global avg model
+            start_model = self.client_model.get_params() # Backup the model first
+            self.client_model.set_params(self.latest_model) # Set the training model to global avg model
+            
+            #client_model, client_update = self.pre_train_client(client) 
+            diff_list, assign_group = self.get_assign_group(client, run_mode)
+
+            # update(Init) the diff list of client
+            client.update_difference(diff_list)
+            
+            # Only set the group attr of client, do not actually add clients to the group
+            client.set_group(assign_group)
+            
+            # Recovery the training model
+            self.client_model.set_params(start_model)
+            return
+
+        if run_mode == 'IFCA' or run_mode == 'FeSEM':
+            pass # IFCA and FeSEM didn't use cold start strategy
+            return
         
     """ Deal with the group cold start problem """
     def group_cold_start(self, random_centers=False):
         
-        if random_centers == True:
-            # Strategy #1: random pre-train num_group clients as cluster centers
+        if self.run_mode == 'FedGroup':
+            # Strategy #1: Randomly pre-train num_group clients as cluster centers
             # It is an optional strategy of FedGroup, named FedGroup-RCC
-            if self.run_mode == 'FedGroup':
-                selected_clients = random.sample(self.clients, k=self.num_group)
-                for c, g in zip(selected_clients, self.group_list):
-                    g.latest_model, g.latest_update = self.pre_train_client(c)
-                    c.set_group(g)
-
-            # Strategy #2: random initialize group models as centers
-            # <IFCA> and <FeSEM> use this strategy.
-            if self.run_mode == 'IFCA' or self.run_mode == 'FeSEM':
-                # Backup the original model params
-                backup_params = self.client_model.get_params()
-                # Reinitialize num_group clients models as centers models
-                for idx, g in enumerate(self.group_list):
-                    # Change the seed of tensorflow
-                    tf.set_random_seed(idx*666 + self.seed)
-                    # Reinitialize params of model
-                    self.client_model.sess.run(tf.global_variables_initializer())
-                    new_params = self.client_model.get_params()
-                    g.latest_model, g.latest_update = new_params, new_params
-
-                # Restore the seed of tensorflow
-                tf.set_random_seed(123 + self.seed)
-                # Reinitialize for insurance purposes
-                self.client_model.sess.run(tf.global_variables_initializer())
-                # Restore the weights of model
-                self.client_model.set_params(backup_params)
+            if random_centers == True:
+                    selected_clients = random.sample(self.clients, k=self.num_group)
+                    for c, g in zip(selected_clients, self.group_list):
+                        g.latest_model, g.latest_update = self.pre_train_client(c)
+                        c.set_group(g)
             
-        
-        if random_centers == False:
-            # Strategy #3: Pre-train, then clustering the directions of clients' weights
+            # Strategy #2: Pre-train, then clustering the directions of clients' weights
             # <FedGroup> and <FedGrouProx> use this strategy
-            alpha = 20
-            selected_clients = random.sample(self.clients, k=min(self.num_group*alpha, len(self.clients)))
+            if random_centers == False:
+                alpha = 20 ######## Pre-train Scaler ###################
+                selected_clients = random.sample(self.clients, k=min(self.num_group*alpha, len(self.clients)))
 
-            for c in selected_clients: c.clustering = True # Mark these clients as clustering client
+                for c in selected_clients: c.clustering = True # Mark these clients as clustering client
 
-            cluster = self.clustering_clients(selected_clients) # {Cluster ID: (cm, [c1, c2, ...])}
-            # Init groups accroding to the clustering results
-            for g, id in zip(self.group_list, cluster.keys()):
-                # Init the group latest update
-                new_model = cluster[id][0]
-                g.latest_update = [w1-w0 for w0, w1 in zip(g.latest_model, new_model)]
-                g.latest_model = new_model
-                # These clients do not need to be cold-started
-                # Set the "group" attr of client only, didn't add the client to group
-                for c in cluster[id][1]: c.set_group(g)
+                cluster = self.clustering_clients(selected_clients) # {Cluster ID: (cm, [c1, c2, ...])}
+                # Init groups accroding to the clustering results
+                for g, id in zip(self.group_list, cluster.keys()):
+                    # Init the group latest update
+                    new_model = cluster[id][0]
+                    g.latest_update = [w1-w0 for w0, w1 in zip(g.latest_model, new_model)]
+                    g.latest_model = new_model
+                    # These clients do not need to be cold-started
+                    # Set the "group" attr of client only, didn't add the client to group
+                    for c in cluster[id][1]: c.set_group(g)
+
+        # Strategy #3: random initialize group models as centers
+        # <IFCA> and <FeSEM> use this strategy.
+        if self.run_mode == 'IFCA' or self.run_mode == 'FeSEM':
+            # Backup the original model params
+            backup_params = self.client_model.get_params()
+            # Reinitialize num_group clients models as centers models
+            for idx, g in enumerate(self.group_list):
+                # Change the seed of tensorflow
+                tf.set_random_seed(idx*666 + self.seed)
+                # Reinitialize params of model
+                self.client_model.sess.run(tf.global_variables_initializer())
+                new_params = self.client_model.get_params()
+                g.latest_model, g.latest_update = new_params, new_params
+
+            # Restore the seed of tensorflow
+            tf.set_random_seed(123 + self.seed)
+            # Reinitialize for insurance purposes
+            self.client_model.sess.run(tf.global_variables_initializer())
+            # Restore the weights of model
+            self.client_model.set_params(backup_params)
+        
         return
 
     """ Clustering clients by K Means"""
@@ -237,11 +263,12 @@ class Server(BaseFedarated):
 
         return cluster
 
+    # Measure the discrepancy between group model and global model
     def measure_group_diffs(self):
-        diffs = np.empty(len(self.group_list))
+        diffs = np.zeros(len(self.group_list))
         for idx, g in enumerate(self.group_list):
             # direction
-            #diff = self.measure_difference(self.group_list[0].latest_model, g.latest_model)
+            #diff = self.measure_difference(...)
             # square root
             model_a = process_grad(self.latest_model)
             model_b = process_grad(g.latest_model)
@@ -249,6 +276,26 @@ class Server(BaseFedarated):
             diffs[idx] = diff
         diffs = diffs + [np.sum(diffs)] # Append the sum(discrepancies) to the end
         return diffs
+
+    # Measure the discrepancy between group model and client model
+    def measure_client_group_diffs(self):
+        diffs = np.zeros(len(self.group_list))
+        number_clients = [len(g.get_client_ids()) for g in self.group_list]
+        for idx, g in enumerate(self.group_list):
+            diff = 0.0
+            if number_clients[idx] > 0:
+                model_g = process_grad(g.latest_model)
+                for c in g.clients.values():
+                    model_c = process_grad(c.local_model)
+                    diff += np.sum((model_c-model_g)**2)**0.5
+            else:
+                diff = 0.0 # The group is empty 
+            diffs[idx] = diff
+        average_total_diff = np.sum(diffs) / sum(number_clients)
+        average_group_diff = diffs / number_clients
+        average_diffs = np.append([average_total_diff], average_group_diff) # Append the sum of average (discrepancies) to the head
+        
+        return average_diffs
 
     """ Pre-train the client 1 epoch and return weights """
     def pre_train_client(self, client):
@@ -309,13 +356,15 @@ class Server(BaseFedarated):
         self.client_model.set_params(backup_model) # Recovery the model
         return results
 
-
+    """Main Train Function
+    """
     def train(self):
         print('Training with {} workers ---'.format(self.clients_per_round))
+
         # Clients cold start, pre-train all clients
         for c in self.clients:
                 if c.is_cold() == True:
-                    self.client_cold_start(c)
+                    self.client_cold_start(c, self.run_mode)
 
         for i in range(self.num_rounds):
 
@@ -327,9 +376,13 @@ class Server(BaseFedarated):
             # Clear all group, the group attr of client is retrained
             for g in self.group_list: g.clear_clients()
             
-            # Client cold start
-            # Reshcedule selected clients to groups
-            self.reschedule_groups(selected_clients, self.allow_empty, self.evenly, self.RAC)
+            # Reshcedule selected clients to groups, add client to group's client list
+            if self.run_mode == 'FedGroup':
+                self.reschedule_groups(selected_clients, self.allow_empty, self.evenly, self.RAC)
+            if self.run_mode == 'IFCA':
+                self.IFCA_reschedule_group(selected_clients)
+            if self.run_mode == 'FeSEM':
+                self.FeSEM_reschedule_group(selected_clients)
 
             # Get not empty groups
             handling_groups = self.get_not_empty_groups()
@@ -343,7 +396,8 @@ class Server(BaseFedarated):
             # Freeze these groups before training
             for g in handling_groups:
                 g.freeze()
-
+            
+            # Evalute group model before training
             if i % self.eval_every == 0:
                 """
                 stats = self.test() # have set the latest model for all clients
@@ -377,8 +431,10 @@ class Server(BaseFedarated):
                 self.writer.write_means(mean_test_acc, mean_train_acc)
                 print('At round {} mean test accuracy: {} mean train accuracy: {}'.format(
                     i, mean_test_acc, mean_train_acc))
-                diffs = self.measure_group_diffs()
-                print("The groups difference are:", diffs)
+                #diffs = self.measure_group_diffs()
+                diffs = self.measure_client_group_diffs()
+                print("The client-group discrepancy are:", diffs)
+                # The diffs in the first round may not make sense.
                 self.writer.write_diffs(diffs)
 
             # Broadcast the global model to clients(groups)
@@ -393,22 +449,18 @@ class Server(BaseFedarated):
                     if self.prox == True:
                         # Update the optimizer, the vstar is latest_model of this group
                         self.inner_opt.set_params(g.latest_model, self.client_model)
-                    # Set the global the group model
+                    # Set the global model to the group model
                     self.client_model.set_params(g.latest_model)
-                    # Begin group training
-                    cupdates = g.train()
-                # After end of the training of client, update the diff list of client
-                for client, update in cupdates.items():
-                    diff_list = []
-                    for g in self.group_list:
-                        diff_g = self.measure_difference(update, g.latest_update)
-                        diff_list.append((g, diff_g))
-                    client.update_difference(diff_list)
-                        
-                # Recovery the client model before next group training
-                #self.client_model.set_params(self.latest_model)
+                    
+                    """ Begin group training, call the train() function of Group object,
+                        return the update vector of client.
+                    """
+                    cmodels, cupdates = g.train()
+
+                # TODO: After end of the training of client, update the diff list of client
 
             # Aggregate groups model and update the global (latest) model 
+            # Note: IFCA and FeSEM do not implement inter-group aggregation (agg_lr=0)
             self.aggregate_groups(self.group_list, agg_lr=self.agg_lr)
             
             # Refresh the global model and global delta weights (latest_update)
@@ -455,7 +507,8 @@ class Server(BaseFedarated):
 
         return
   
-
+    """ Reschedule function of FedGroup, assign selected client to group according to some addtional options.
+    """
     def reschedule_groups(self, selected_clients, allow_empty=False, evenly=False, randomly=False):
         
         # deprecated
@@ -553,6 +606,30 @@ class Server(BaseFedarated):
                         first_rank_group.add_client(c)
             return
 
+        return
+
+    """ Reschedule function of IFCA, assign selected client according to training loss
+    """
+    def IFCA_reschedule_group(self, selected_clients):
+        for c in selected_clients:
+            # IFCA assign client to group with minium training loss
+            diff_list, assign_group = self.get_assign_group(c, run_mode='IFCA')
+            c.set_group(assign_group)
+            c.update_difference(diff_list)
+            # Add client to group's client list
+            assign_group.add_client(c)
+        return
+
+    """ Similar to IFCA, get_assign_group() can handle well
+    """
+    def FeSEM_reschedule_group(self, selected_clients):
+        for c in selected_clients:
+            # IFCA assign client to group with minium training loss
+            diff_list, assign_group = self.get_assign_group(c, run_mode='FeSEM')
+            c.set_group(assign_group)
+            c.update_difference(diff_list)
+            # Add client to group's client list
+            assign_group.add_client(c)
         return
 
     def test_ternary_cosine_similariy(self, alpha=20):
