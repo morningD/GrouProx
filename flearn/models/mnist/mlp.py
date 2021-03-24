@@ -109,3 +109,10 @@ class Model(object):
     
     def close(self):
         self.sess.close()
+    
+    def reinitialize_params(self, seed):
+        tf.set_random_seed(seed)
+        with self.graph.as_default():
+            self.sess.run(tf.global_variables_initializer())
+            model_params = self.get_params()
+        return model_params

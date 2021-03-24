@@ -91,14 +91,20 @@ class Server(BaseFedarated):
         # Strategy #2: Euclidean distance between client model and group model
         # FeSEM use this.
         if run_mode == 'FeSEM':
-            diff = np.sum((cmodel - group.latest_model)**2)
+            cmodel, gmodel = process_grad(client.local_model), process_grad(group.latest_model)
+            diff = np.sum((cmodel-gmodel)**2)
 
         # Strategy #3: Training Loss of group model
         # IFCA use this.
         if run_mode == 'IFCA':
-            # Evaluate the client to get the training loss
+            # The training loss of group model evaluate on client's training set
+            backup_params = client.get_params()
+            # Note: use group model for evaluation
+            client.set_params(group.latest_model)
             _, train_loss, _ = client.train_error_and_loss()
             diff = train_loss
+            # Restore paramters
+            client.set_params(backup_params)
 
         return diff
 
@@ -189,18 +195,25 @@ class Server(BaseFedarated):
             # Reinitialize num_group clients models as centers models
             for idx, g in enumerate(self.group_list):
                 # Change the seed of tensorflow
-                tf.set_random_seed(idx*666 + self.seed)
+                new_seed = (idx + self.seed) * 888
                 # Reinitialize params of model
-                self.client_model.sess.run(tf.global_variables_initializer())
+                self.client_model.reinitialize_params(new_seed)
                 new_params = self.client_model.get_params()
                 g.latest_model, g.latest_update = new_params, new_params
-
+                
             # Restore the seed of tensorflow
             tf.set_random_seed(123 + self.seed)
-            # Reinitialize for insurance purposes
-            self.client_model.sess.run(tf.global_variables_initializer())
-            # Restore the weights of model
+            # Restore the parameter of model
             self.client_model.set_params(backup_params)
+            """
+            # Reinitialize for insurance purposes
+            new_params = self.client_model.reinitialize_params(123 + self.seed)
+            # Restore the weights of model
+            if np.array_equal(process_grad(backup_params), process_grad(new_params)) == True:
+                print('############TRUE############')
+            else:
+                print('############FALSE############')
+            """
         
         return
 
@@ -317,11 +330,13 @@ class Server(BaseFedarated):
     def group_test(self):
         backup_model = self.latest_model # Backup the global model
         results = []
+        tot_num_client = 0
         for g in self.group_list:
             c_list = []
             for c in self.clients:
                 if c.group == g:
                     c_list.append(c)
+            tot_num_client += len(c_list)
             num_samples = []
             tot_correct = []
             self.client_model.set_params(g.latest_model)
@@ -332,7 +347,7 @@ class Server(BaseFedarated):
             ids = [c.id for c in c_list]
             results.append((ids, g, num_samples, tot_correct))
         self.client_model.set_params(backup_model) # Recovery the model
-        return results
+        return tot_num_client, results
 
     def group_train_error_and_loss(self):
         backup_model = self.latest_model # Backup the global model
@@ -404,7 +419,7 @@ class Server(BaseFedarated):
                 # Test on training data, it's redundancy
                 stats_train = self.train_error_and_loss()
                 """
-                group_stats = self.group_test()
+                num_test_client, group_stats = self.group_test()
                 group_stats_train = self.group_train_error_and_loss()
                 test_tp, test_tot = 0, 0
                 train_tp, train_tot = 0, 0
@@ -425,12 +440,12 @@ class Server(BaseFedarated):
                     mean_train_acc = train_tp*1.0 / train_tot
                     
                     # Write results to csv file
-                    self.writer.write_stats(i, stats[1].id, test_acc, 
+                    self.writer.write_stats(i, stats[1].id, test_acc,
                         train_acc, train_loss, len(stats[1].get_client_ids()))
                 
                 self.writer.write_means(mean_test_acc, mean_train_acc)
-                print('At round {} mean test accuracy: {} mean train accuracy: {}'.format(
-                    i, mean_test_acc, mean_train_acc))
+                print('At round {} mean test accuracy: {} mean train accuracy: {} # of test client: {}'.format(
+                    i, mean_test_acc, mean_train_acc, num_test_client))
                 #diffs = self.measure_group_diffs()
                 diffs = self.measure_client_group_diffs()
                 print("The client-group discrepancy are:", diffs)

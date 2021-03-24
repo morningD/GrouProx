@@ -7,7 +7,7 @@ class Client(object):
         
         # The local model params and updates of this client,
         # local_model and local_update only can be fresh by train() function of Group, pre-train will no change it
-        self.local_model = model.get_params()
+        self.local_model = model.get_params() # Init, the local model and local update will change during training
         self.local_update = model.get_params()
 
         self.id = id # string
