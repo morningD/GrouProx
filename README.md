@@ -4,6 +4,14 @@ The source code of the Arxiv preprint article:
 
 [FedGroup: Accurate Federated Learning via Decomposed Similarity-Based Clustering](https://arxiv.org/abs/2010.06870)
 
+# Overview
+FedGroup can simulate following (Clustered) Federated Learning framework:
+- FedAvg & FedSGD -> [Communication-Efficient Learning of Deep Networks from Decentralized Data](http://proceedings.mlr.press/v54/mcmahan17a.html)
+- FedProx -> [Federated optimization in heterogeneous networks](https://arxiv.org/abs/1812.06127)
+- FedGrop & FedGrouProx -> [FedGroup: Accurate Federated Learning via Decomposed Similarity-Based Clustering](https://arxiv.org/abs/2010.06870)
+- IFCA -> [An Efficient Framework for Clustered Federated Learning](https://proceedings.neurips.cc/paper/2020/hash/e32cc80bf07915058ce90722ee17bb71-Abstract.html)
+- FeSEM -> [Multi-center federated learning](https://arxiv.org/abs/2005.01026)
+
 # Requirement
 Python packages:
 - Tensorflow (>2.0)
@@ -12,7 +20,7 @@ Python packages:
 - matplotlib
 - tqdm
  
- You need to download the dataset (e.g. FEMNIST, MNIST, Sent140, Synthetic) and specify a GPU id follow the guidelines of [FedProx](https://github.com/litian96/FedProx).
+>>You need to download the dataset (e.g. FEMNIST, MNIST, Sent140, Synthetic) and specify a GPU id follow the guidelines of [FedProx](https://github.com/litian96/FedProx).
 
 The directory structure of the datasets should look like this:
 
@@ -27,14 +35,6 @@ GrouProx-->data-->mnist-->data-->train--> ***train.json
                |
                ...
 ```
-
-# Overview
-FedGroup can simulate following (Clustered) Federated Learning framework:
-- FedAvg & FedSGD -> [Communication-Efficient Learning of Deep Networks from Decentralized Data](http://proceedings.mlr.press/v54/mcmahan17a.html)
-- FedProx -> [Federated optimization in heterogeneous networks](https://arxiv.org/abs/1812.06127)
-- FedGrop & FedGrouProx -> [FedGroup: Accurate Federated Learning via Decomposed Similarity-Based Clustering](https://arxiv.org/abs/2010.06870)
-- IFCA -> [An Efficient Framework for Clustered Federated Learning](https://proceedings.neurips.cc/paper/2020/hash/e32cc80bf07915058ce90722ee17bb71-Abstract.html)
-- FeSEM -> [Multi-center federated learning](https://arxiv.org/abs/2005.01026)
 
 # Quick Start
 Just run `GrouProx_notebook.ipynb`.
