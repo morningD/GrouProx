@@ -21,6 +21,7 @@ class Group(object):
         self.num_samples = []
         self.max_clients = 1e4 # Init to a large number
         self.min_clients = 0
+        self.latest_diff = 0.0 # Latest discrepancy
 
         #debug
         self.grads = None

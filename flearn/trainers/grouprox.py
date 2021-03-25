@@ -292,7 +292,8 @@ class Server(BaseFedarated):
 
     # Measure the discrepancy between group model and client model
     def measure_client_group_diffs(self):
-        diffs = np.zeros(len(self.group_list))
+        average_group_diffs = np.zeros(len(self.group_list))
+        total_group_diff = 0.0
         number_clients = [len(g.get_client_ids()) for g in self.group_list]
         for idx, g in enumerate(self.group_list):
             diff = 0.0
@@ -301,12 +302,13 @@ class Server(BaseFedarated):
                 for c in g.clients.values():
                     model_c = process_grad(c.local_model)
                     diff += np.sum((model_c-model_g)**2)**0.5
+                total_group_diff += diff
+                average_group_diffs[idx] = diff / float(number_clients[idx])
+                g.latest_diff = average_group_diffs[idx]
             else:
-                diff = 0.0 # The group is empty 
-            diffs[idx] = diff
-        average_total_diff = np.sum(diffs) / sum(number_clients)
-        average_group_diff = diffs / number_clients
-        average_diffs = np.append([average_total_diff], average_group_diff) # Append the sum of average (discrepancies) to the head
+                average_group_diffs[idx] = 0 # The group is empty, the discrepancy is ZERO
+        average_total_diff = total_group_diff / sum(number_clients)
+        average_diffs = np.append([average_total_diff], average_group_diffs) # Append the sum of average (discrepancies) to the head
         
         return average_diffs
 
@@ -377,9 +379,11 @@ class Server(BaseFedarated):
         print('Training with {} workers ---'.format(self.clients_per_round))
 
         # Clients cold start, pre-train all clients
+        start_time = time.time()
         for c in self.clients:
                 if c.is_cold() == True:
                     self.client_cold_start(c, self.run_mode)
+        print("Cold start clients takes {}s seconds".format(time.time()-start_time))
 
         for i in range(self.num_rounds):
 
@@ -394,10 +398,13 @@ class Server(BaseFedarated):
             # Reshcedule selected clients to groups, add client to group's client list
             if self.run_mode == 'FedGroup':
                 self.reschedule_groups(selected_clients, self.allow_empty, self.evenly, self.RAC)
-            if self.run_mode == 'IFCA':
-                self.IFCA_reschedule_group(selected_clients)
-            if self.run_mode == 'FeSEM':
-                self.FeSEM_reschedule_group(selected_clients)
+            else: # IFCA and FeSEM need rescheduling client in each round
+                start_time = time.time()
+                if self.run_mode == 'IFCA':
+                    self.IFCA_reschedule_group(selected_clients)
+                if self.run_mode == 'FeSEM':
+                    self.FeSEM_reschedule_group(selected_clients)
+                print("Scheduling clients takes {}s seconds".format(time.time()-start_time))
 
             # Get not empty groups
             handling_groups = self.get_not_empty_groups()
@@ -456,6 +463,7 @@ class Server(BaseFedarated):
             # self.client_model.set_params(self.latest_model)
             
             # Train each group sequentially
+            start_time = time.time()
             for g in handling_groups:
                 # Backup the origin model
                 print("Begin group {:2d} training".format(g.get_group_id()))
@@ -471,9 +479,10 @@ class Server(BaseFedarated):
                         return the update vector of client.
                     """
                     cmodels, cupdates = g.train()
+                    # TODO: After end of the training of client, update the diff list of client
 
-                # TODO: After end of the training of client, update the diff list of client
-
+            print("Training groups takes {}s seconds".format(time.time()-start_time))
+            
             # Aggregate groups model and update the global (latest) model 
             # Note: IFCA and FeSEM do not implement inter-group aggregation (agg_lr=0)
             self.aggregate_groups(self.group_list, agg_lr=self.agg_lr)
