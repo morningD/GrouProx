@@ -430,29 +430,34 @@ class Server(BaseFedarated):
                 group_stats_train = self.group_train_error_and_loss()
                 test_tp, test_tot = 0, 0
                 train_tp, train_tot = 0, 0
+                train_loss_list, number_samples_list = [], []
                 for stats, stats_train in zip(group_stats, group_stats_train):
                     tqdm.write('Group {}'.format(stats[1].id))
                     test_tp += np.sum(stats[3])
                     test_tot += np.sum(stats[2])
                     test_acc = np.sum(stats[3])*1.0/np.sum(stats[2])
                     tqdm.write('At round {} accuracy: {}'.format(i, test_acc))  # testing accuracy
+                    
                     train_tp += np.sum(stats_train[3])
                     train_tot += np.sum(stats_train[2])
+                    train_loss_list += stats_train[4]
+                    number_samples_list += stats_train[2]
+                    
                     train_acc = np.sum(stats_train[3])*1.0/np.sum(stats_train[2])
                     tqdm.write('At round {} training accuracy: {}'.format(i, train_acc)) # train accuracy
                     train_loss = np.dot(stats_train[4], stats_train[2])*1.0/np.sum(stats_train[2])
                     tqdm.write('At round {} training loss: {}'.format(i, train_loss))
                     
-                    mean_test_acc = test_tp*1.0 / test_tot
-                    mean_train_acc = train_tp*1.0 / train_tot
-                    
                     # Write results to csv file
                     self.writer.write_stats(i, stats[1].id, test_acc,
                         train_acc, train_loss, len(stats[1].get_client_ids()))
                 
-                self.writer.write_means(mean_test_acc, mean_train_acc)
-                print('At round {} mean test accuracy: {} mean train accuracy: {} # of test client: {}'.format(
-                    i, mean_test_acc, mean_train_acc, num_test_client))
+                mean_test_acc = test_tp*1.0 / test_tot
+                mean_train_acc = train_tp*1.0 / train_tot
+                mean_train_loss = np.dot(train_loss_list, number_samples_list)*1.0/np.sum(number_samples_list)
+                self.writer.write_means(mean_test_acc, mean_train_acc, mean_train_loss)
+                print('At round {} mean test accuracy: {} mean train accuracy: {} mean train loss: {} \
+                    number of test client: {}'.format(i, mean_test_acc, mean_train_acc, mean_train_loss, num_test_client))
                 #diffs = self.measure_group_diffs()
                 diffs = self.measure_client_group_diffs()
                 print("The client-group discrepancy are:", diffs)

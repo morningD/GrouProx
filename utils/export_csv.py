@@ -31,7 +31,7 @@ class CSVWriter(object):
             header += 'TestAcc\tTrainAcc\tTrainLoss\tNumClient\t'
             header += self.group_delimiter
         if is_group:
-            header += 'MeanTestAcc\tMeanTrainAcc\t'
+            header += 'MeanTestAcc\tMeanTrainAcc\tMeanTrainLoss\t'
             header += 'GroupDiff\t'
         else:
             header += 'ClientDiff\t'
@@ -49,8 +49,8 @@ class CSVWriter(object):
         info += self.group_delimiter
         self.csv_f.write(info)
 
-    def write_means(self, mean_test, mean_train):
-        info = '{:.3f}\t{:.3f}\t'.format(mean_test, mean_train)
+    def write_means(self, mean_test, mean_train, mean_train_loss):
+        info = '{:.3f}\t{:.3f}\t{:.3f}\t'.format(mean_test, mean_train, mean_train_loss)
         self.csv_f.write(info)
 
     def write_diffs(self, diffs):
