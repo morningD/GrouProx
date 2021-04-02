@@ -1,4 +1,6 @@
 import numpy as np
+from numpy.core.numeric import roll
+from sklearn.utils.validation import check_random_state
 from tqdm import trange, tqdm
 import tensorflow.compat.v1 as tf
 tf.disable_v2_behavior()
@@ -11,9 +13,9 @@ from flearn.utils.model_utils import Metrics
 from flearn.models.group import Group
 import random
 from utils.export_csv import CSVWriter
-from sklearn.cluster import KMeans
+from sklearn.cluster import KMeans, SpectralClustering
 from sklearn.decomposition import TruncatedSVD
-from sklearn.metrics.pairwise import cosine_similarity, euclidean_distances
+from sklearn.metrics.pairwise import cosine_similarity, euclidean_distances, nan_euclidean_distances
 from collections import Counter
 import time
 
@@ -36,6 +38,7 @@ class Server(BaseFedarated):
         self.agg_lr = params['agg_lr']
         self.RAC = params['RAC'] # Randomly Assign Clients
         self.RCC = params['RCC'] # Random Cluster Center
+        self.FCD = params['FCD'] # Use Full version of Cosine Dissimilarity
 
         """
         We implement THREE run mode of FedGroup: 
@@ -217,7 +220,7 @@ class Server(BaseFedarated):
         
         return
 
-    """ Clustering clients by K Means"""
+    """ Clustering clients by SpectralClustering"""
     def clustering_clients(self, clients, n_clusters=None, max_iter=20):
         if n_clusters is None: n_clusters = self.num_group
         # Pre-train these clients first
@@ -230,38 +233,53 @@ class Server(BaseFedarated):
         print("Pre-training takes {}s seconds".format(time.time()-start_time))
 
         update_array = [process_grad(update) for update in cupdates.values()]
-        update_array = np.vstack(update_array).T # shape=(n_params, n_client)
+        delta_w = np.vstack(update_array) # shape=(n_clients, n_params)
         
         # Record the execution time
         start_time = time.time()
-        svd = TruncatedSVD(n_components=3, random_state=self.sklearn_seed)
-        decomp_updates = svd.fit_transform(update_array) # shape=(n_params, 3)
+        # Decomposed the directions of updates to num_group of directional vectors
+        svd = TruncatedSVD(n_components=self.num_group, random_state=self.sklearn_seed)
+        decomp_updates = svd.fit_transform(delta_w.T) # shape=(n_params, n_groups)
         print("SVD takes {}s seconds".format(time.time()-start_time))
         n_components = decomp_updates.shape[-1]
 
-        # Record the execution time
+        # Record the execution time of DCD calculation
         start_time = time.time()
-        diffs = []
-        delta_w = update_array.T # shape=(n_client, n_params)
-        diffs = self.get_ternary_cosine_similarity_matrix(delta_w, decomp_updates)
-        '''
-        for dir in decomp_updates.T:
-            dir_diff = [self.measure_difference(cupdates[c], dir) for c in clients]
-            diffs.append(dir_diff)
-        diffs = np.vstack(diffs).T # shape=(n_client, 3)
-        '''
-        print("Ternary Cossim Matrix calculation takes {}s seconds".format(time.time()-start_time))
+        decomposed_cossim_matrix = cosine_similarity(delta_w, decomp_updates.T) # shape=(n_clients, n_clients)
+        # Normialize it to dissimilarity [0,1]
+        decomposed_dissim_matrix = (1.0 - decomposed_cossim_matrix) / 2.0
+        DCD = self._calculate_data_driven_measure(decomposed_dissim_matrix, correction=False) # shape=(n_clients, n_clients)
+        print("DCD Matrix calculation takes {}s seconds".format(time.time()-start_time))
         
+        # Test the excution time of full cosine dissimilarity
+        start_time = time.time()
+        full_cossim_matrix = cosine_similarity(delta_w) # shape=(n_clients, n_clients)
+        # Normialize cossim to [0,1]
+        full_dissim_matrix = (1.0 - full_cossim_matrix) / 2.0
+        FCD = self._calculate_data_driven_measure(full_dissim_matrix, correction=True) # shape=(n_clients, n_clients)
+        print("FCD Matrix calculation takes {}s seconds".format(time.time()-start_time))
+
+        # Apply RBF kernel to DCD or FCD
+        gamma=0.1
+        if self.FCD == True:
+            affinity_matrix = np.exp(- FCD ** 2 / (2. * gamma ** 2))
+        else: # Use DCD as default
+            affinity_matrix = np.exp(- DCD ** 2 / (2. * gamma ** 2))
+        print('DCD', DCD[0][:10], '\nFCD', FCD[0][:10], '\naffinity', affinity_matrix[0][:10])
+
         # Record the execution time
         start_time = time.time()
-        kmeans = KMeans(n_clusters, random_state=self.sklearn_seed, max_iter=max_iter).fit(diffs)
+        #result = KMeans(n_clusters, random_state=self.sklearn_seed, max_iter=max_iter).fit(diffs)
+        result = SpectralClustering(n_clusters, random_state=self.sklearn_seed, n_init=max_iter, \
+            gamma=gamma, affinity='precomputed').fit(affinity_matrix)
+
         print("Clustering takes {}s seconds".format(time.time()-start_time))
-        print('Clustering Results:', Counter(kmeans.labels_))
-        print('Clustering Inertia:', kmeans.inertia_)
+        print('Clustering Results:', Counter(result.labels_))
+        #print('Clustering Inertia:', result.inertia_)
 
         cluster = {} # {Cluster ID: (cm, [c1, c2, ...])}
         cluster2clients = [[] for _ in range(n_clusters)] # [[c1, c2,...], [c3, c4,...], ...]
-        for idx, cluster_id in enumerate(kmeans.labels_):
+        for idx, cluster_id in enumerate(result.labels_):
             #print(idx, cluster_id, len(cluster2clients), n_clusters) # debug
             cluster2clients[cluster_id].append(clients[idx])
         for cluster_id, client_list in enumerate(cluster2clients):
@@ -661,9 +679,63 @@ class Server(BaseFedarated):
             assign_group.add_client(c)
         return
 
+    def _calculate_data_driven_measure(self, pm, correction=False):
+        ''' calculate the data-driven measure such as MADD'''
+        # Input: pm-> proximity matrix; Output: dm-> data-driven distance matrix
+        # pm.shape=(n_clients, n_dims), dm.shape=(n_clients, n_clients)
+        n_clients, n_dims = pm.shape[0], pm.shape[1]
+        dm = np.zeros(shape=(n_clients, n_clients))
+        
+        """ Too Slow, and misunderstanding MADD. Deprecated
+        for i in range(n_clients):
+            for j in range(i+1, n_clients):
+                for k in range(n_clients):
+                    if k !=i and k != j:
+                        dm[i,j] = dm[j,i] = abs(np.sum((pm[i]-pm[k])**2)**0.5 - \
+                            np.sum((pm[j]-pm[k])**2)**0.5)
+        """
+        # Fast version
+        '''1, Get the repeated proximity matrix.
+            We write Row1 = d11, d12, d13, ... ; and Row2 = d21, d22, d23, ...
+            [   Row1    ]   [   Row2    ]       [   Rown    ]
+            |   Row1    |   |   Row2    |       |   Rown    |
+            |   ...     |   |   ...     |       |   ...     |
+            [   Row1    ],  [   Row2    ], ..., [   Rown    ]
+        '''
+        row_pm_matrix = np.repeat(pm[:,np.newaxis,:], n_clients, axis=1)
+        #print('row_pm', row_pm_matrix[0][0][:5], row_pm_matrix[0][1][:5])
+
+        # Get the repeated colum proximity matrix
+        '''
+            [   Row1    ]   [   Row1    ]       [   Row1    ]
+            |   Row2    |   |   Row2    |       |   Row2    |
+            |   ...     |   |   ...     |       |   ...     |
+            [   Rown    ],  [   Rown    ], ..., [   Rown    ]
+        '''
+        col_pm_matrix = np.tile(pm, (n_clients, 1, 1))
+        #print('col_pm', col_pm_matrix[0][0][:5], col_pm_matrix[0][1][:5])
+        
+        # Calculate the absolute difference of two disstance matrix, It is 'abs(||u-z|| - ||v-z||)' in MADD.
+        # d(1,2) = ||w1-z|| - ||w2-z||, shape=(n_clients,)
+        '''
+            [   d(1,1)  ]   [   d(1,2)  ]       [   d(1,n)  ]
+            |   d(2,1)  |   |   d(2,2)  |       |   d(2,n)  |
+            |   ...     |   |   ...     |       |   ...     |
+            [   d(n,1)  ],  [   d(n,2)  ], ..., [   d(n,n)  ]
+        '''
+        absdiff_pm_matrix = np.abs(col_pm_matrix - row_pm_matrix) # shape=(n_clients, n_clients, n_clients)
+        # Calculate the sum of absolute differences
+        if correction == True:
+            dm = np.sum(absdiff_pm_matrix, axis=-1) / (n_dims-2.0)
+        else:
+            dm = np.sum(absdiff_pm_matrix, axis=-1) / (n_dims)
+        #print('absdiff_pm_matrix', absdiff_pm_matrix[0][0][:5])
+
+        return dm # shape=(n_clients, n_clients)
+
     def test_ternary_cosine_similariy(self, alpha=20):
         ''' compare the ternary similarity and cosine similarity '''
-        def calculate_cosine_distance(v1, v2):
+        def _calculate_cosine_distance(v1, v2):
             cosine = np.dot(v1, v2) / (np.sqrt(np.sum(v1**2)) * np.sqrt(np.sum(v2**2)))
             return cosine
 
@@ -678,31 +750,46 @@ class Server(BaseFedarated):
         clustering_update_array = [process_grad(cupdates[c]) for c in clustering_clients]
         clustering_update_array = np.vstack(clustering_update_array).T # shape=(n_params, n_clients)
         
-        svd = TruncatedSVD(n_components=3, random_state=self.sklearn_seed)
-        decomp_updates = svd.fit_transform(clustering_update_array) # shape=(n_params, 3)
+        # We decomposed the update vectors to numer_group components.
+        svd = TruncatedSVD(n_components=self.num_group, random_state=self.sklearn_seed)
+        decomp_updates = svd.fit_transform(clustering_update_array) # shape=(n_params, n_groups)
         n_components = decomp_updates.shape[-1]
 
+        """
         # calculate the ternary similarity matrix for all clients
         ternary_cossim = []
         update_array = [process_grad(cupdates[c]) for c in self.clients]
         delta_w = np.vstack(update_array) # shape=(n_clients, n_params)
         ternary_cossim = self.get_ternary_cosine_similarity_matrix(delta_w, decomp_updates)
-
-        # calculate the tranditional similarity matrix for all clients
-        #old_cossim = np.zeros(shape=(n_clients, n_clients), dtype=np.float32)
-
+        """
+        """
+        # calculate the tranditional pairwise cosine similarity matrix for all clients
         old_cossim = cosine_similarity(delta_w)
         old_cossim = (1.0 - old_cossim) / 2.0 # Normalize
+        """
 
-        # Calculate the euclidean distance between every two similaries
-        distance_ternary = euclidean_distances(ternary_cossim)
-        distance_cossim = euclidean_distances(old_cossim) # shape=(n_clients, n_clients)
-        print(distance_ternary.shape, distance_cossim.shape) # shape=(n_clients, n_clients)
+        # Calculate the data-driven decomposed cosine dissimilarity (DCD) for all clients
+        update_array = [process_grad(cupdates[c]) for c in self.clients]
+        delta_w = np.vstack(update_array) # shape=(n_clients, n_params)
+        decomposed_cossim_matrix = cosine_similarity(delta_w, decomp_updates.T) # Shape = (n_clients, n_groups)
+        print("Cossim_matrix shape:", decomposed_cossim_matrix.shape)
+        # Normalize cossim to dissim
+        decomposed_dissim_matrix = (1.0 - decomposed_cossim_matrix) / 2.0
+        DCD = self._calculate_data_driven_measure(decomposed_dissim_matrix, correction=False)
+
+        # Calculate the data-driven full cosine similarity for all clients
+        full_cossim_matrix = cosine_similarity(delta_w)
+        # Normalize
+        full_dissim_matrix = (1.0 - full_cossim_matrix) / 2.0
+        FCD = self._calculate_data_driven_measure(full_dissim_matrix, correction=True)
+
+        # Print the shape of distance matries, make sure equal
+        #print(DCD.shape, FCD.shape) # shape=(n_clients, n_clients)
 
         iu = np.triu_indices(n_clients)
-        x, y = distance_ternary[iu], distance_cossim[iu]
+        x, y = DCD[iu], FCD[iu]
         mesh_points = np.vstack((x,y)).T
 
-        print(x.shape, y.shape)
+        #print(x.shape, y.shape)
         np.savetxt("cossim.csv", mesh_points, delimiter="\t")
         return x, y
