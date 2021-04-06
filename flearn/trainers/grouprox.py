@@ -13,7 +13,7 @@ from flearn.utils.model_utils import Metrics
 from flearn.models.group import Group
 import random
 from utils.export_csv import CSVWriter
-from sklearn.cluster import KMeans, SpectralClustering
+from sklearn.cluster import KMeans, SpectralClustering, AgglomerativeClustering
 from sklearn.decomposition import TruncatedSVD
 from sklearn.metrics.pairwise import cosine_similarity, euclidean_distances, nan_euclidean_distances
 from collections import Counter
@@ -38,7 +38,7 @@ class Server(BaseFedarated):
         self.agg_lr = params['agg_lr']
         self.RAC = params['RAC'] # Randomly Assign Clients
         self.RCC = params['RCC'] # Random Cluster Center
-        self.FCD = params['FCD'] # Use Full version of Cosine Dissimilarity
+        self.MADC = params['MADC'] # Use Mean Absolute Difference of pairwise Cossim
 
         """
         We implement THREE run mode of FedGroup: 
@@ -243,35 +243,50 @@ class Server(BaseFedarated):
         print("SVD takes {}s seconds".format(time.time()-start_time))
         n_components = decomp_updates.shape[-1]
 
-        # Record the execution time of DCD calculation
+        # Record the execution time of EDC calculation
         start_time = time.time()
         decomposed_cossim_matrix = cosine_similarity(delta_w, decomp_updates.T) # shape=(n_clients, n_clients)
+
+        ''' There is no need to normalize the data-driven measure because it is a dissimilarity measure
         # Normialize it to dissimilarity [0,1]
         decomposed_dissim_matrix = (1.0 - decomposed_cossim_matrix) / 2.0
-        DCD = self._calculate_data_driven_measure(decomposed_dissim_matrix, correction=False) # shape=(n_clients, n_clients)
-        print("DCD Matrix calculation takes {}s seconds".format(time.time()-start_time))
+        EDC = decomposed_dissim_matrix
+        '''
+        #EDC = self._calculate_data_driven_measure(decomposed_cossim_matrix, correction=False)
+        print("EDC Matrix calculation takes {}s seconds".format(time.time()-start_time))
         
         # Test the excution time of full cosine dissimilarity
         start_time = time.time()
         full_cossim_matrix = cosine_similarity(delta_w) # shape=(n_clients, n_clients)
+        '''
         # Normialize cossim to [0,1]
         full_dissim_matrix = (1.0 - full_cossim_matrix) / 2.0
-        FCD = self._calculate_data_driven_measure(full_dissim_matrix, correction=True) # shape=(n_clients, n_clients)
-        print("FCD Matrix calculation takes {}s seconds".format(time.time()-start_time))
+        '''
+        MADC = self._calculate_data_driven_measure(full_cossim_matrix, correction=True) # shape=(n_clients, n_clients)
+        #MADC = full_dissim_matrix
+        print("MADC Matrix calculation takes {}s seconds".format(time.time()-start_time))
 
-        # Apply RBF kernel to DCD or FCD
-        gamma=0.1
-        if self.FCD == True:
-            affinity_matrix = np.exp(- FCD ** 2 / (2. * gamma ** 2))
-        else: # Use DCD as default
-            affinity_matrix = np.exp(- DCD ** 2 / (2. * gamma ** 2))
-        print('DCD', DCD[0][:10], '\nFCD', FCD[0][:10], '\naffinity', affinity_matrix[0][:10])
-
+        '''Apply RBF kernel to EDC or MADC
+        gamma=0.2
+        if self.MADC == True:
+            affinity_matrix = np.exp(- MADC ** 2 / (2. * gamma ** 2))
+        else: # Use EDC as default
+            affinity_matrix = np.exp(- EDC ** 2 / (2. * gamma ** 2))
+        '''
         # Record the execution time
         start_time = time.time()
-        #result = KMeans(n_clusters, random_state=self.sklearn_seed, max_iter=max_iter).fit(diffs)
-        result = SpectralClustering(n_clusters, random_state=self.sklearn_seed, n_init=max_iter, \
-            gamma=gamma, affinity='precomputed').fit(affinity_matrix)
+        if self.MADC == True:
+            affinity_matrix = MADC
+            #affinity_matrix = (1.0 - full_cossim_matrix) / 2.0
+            #result = AgglomerativeClustering(n_clusters, affinity='euclidean', linkage='ward').fit(full_cossim_matrix)
+            result = AgglomerativeClustering(n_clusters, affinity='precomputed', linkage='complete').fit(affinity_matrix)
+        else: # Use EDC as default
+            affinity_matrix = decomposed_cossim_matrix
+            #result = AgglomerativeClustering(n_clusters, affinity='euclidean', linkage='ward').fit(decomposed_cossim_matrix)
+            #result = AgglomerativeClustering(n_clusters, affinity='precomputed', linkage='average').fit(EDC)
+            result = KMeans(n_clusters, random_state=self.sklearn_seed, max_iter=max_iter).fit(affinity_matrix)
+        #print('EDC', EDC[0][:10], '\nMADC', MADC[0][:10], '\naffinity', affinity_matrix[0][:10])
+        #result = SpectralClustering(n_clusters, random_state=self.sklearn_seed, n_init=max_iter, affinity='precomputed').fit(affinity_matrix)
 
         print("Clustering takes {}s seconds".format(time.time()-start_time))
         print('Clustering Results:', Counter(result.labels_))
@@ -716,7 +731,7 @@ class Server(BaseFedarated):
         #print('col_pm', col_pm_matrix[0][0][:5], col_pm_matrix[0][1][:5])
         
         # Calculate the absolute difference of two disstance matrix, It is 'abs(||u-z|| - ||v-z||)' in MADD.
-        # d(1,2) = ||w1-z|| - ||w2-z||, shape=(n_clients,)
+        # d(1,2) = ||w1-z|| - ||w2-z||, shape=(n_clients,); d(x,x) always equal 0
         '''
             [   d(1,1)  ]   [   d(1,2)  ]       [   d(1,n)  ]
             |   d(2,1)  |   |   d(2,2)  |       |   d(2,n)  |
@@ -726,7 +741,14 @@ class Server(BaseFedarated):
         absdiff_pm_matrix = np.abs(col_pm_matrix - row_pm_matrix) # shape=(n_clients, n_clients, n_clients)
         # Calculate the sum of absolute differences
         if correction == True:
-            dm = np.sum(absdiff_pm_matrix, axis=-1) / (n_dims-2.0)
+            # We should mask these values like sim(1,2), sim(2,1) in d(1,2)
+            mask = np.zeros(shape=(n_clients, n_clients))
+            np.fill_diagonal(mask, 1) # Mask all diag
+            mask = np.repeat(mask[np.newaxis,:,:], n_clients, axis=0)
+            for idx in range(mask.shape[-1]):
+                #mask[idx,idx,:] = 1 # Mask all row d(1,1), d(2,2)...; Actually d(1,1)=d(2,2)=0
+                mask[idx,:,idx] = 1 # Mask all 0->n colum for 0->n diff matrix,
+            dm = np.sum(np.ma.array(absdiff_pm_matrix, mask=mask), axis=-1) / (n_dims-2.0)
         else:
             dm = np.sum(absdiff_pm_matrix, axis=-1) / (n_dims)
         #print('absdiff_pm_matrix', absdiff_pm_matrix[0][0][:5])
@@ -768,26 +790,27 @@ class Server(BaseFedarated):
         old_cossim = (1.0 - old_cossim) / 2.0 # Normalize
         """
 
-        # Calculate the data-driven decomposed cosine dissimilarity (DCD) for all clients
+        # Calculate the data-driven decomposed cosine dissimilarity (EDC) for all clients
         update_array = [process_grad(cupdates[c]) for c in self.clients]
         delta_w = np.vstack(update_array) # shape=(n_clients, n_params)
         decomposed_cossim_matrix = cosine_similarity(delta_w, decomp_updates.T) # Shape = (n_clients, n_groups)
         print("Cossim_matrix shape:", decomposed_cossim_matrix.shape)
         # Normalize cossim to dissim
-        decomposed_dissim_matrix = (1.0 - decomposed_cossim_matrix) / 2.0
-        DCD = self._calculate_data_driven_measure(decomposed_dissim_matrix, correction=False)
+        #decomposed_dissim_matrix = (1.0 - decomposed_cossim_matrix) / 2.0
+        #EDC = self._calculate_data_driven_measure(decomposed_cossim_matrix, correction=False)
+        EDC = euclidean_distances(decomposed_cossim_matrix)
 
         # Calculate the data-driven full cosine similarity for all clients
         full_cossim_matrix = cosine_similarity(delta_w)
         # Normalize
-        full_dissim_matrix = (1.0 - full_cossim_matrix) / 2.0
-        FCD = self._calculate_data_driven_measure(full_dissim_matrix, correction=True)
+        #full_dissim_matrix = (1.0 - full_cossim_matrix) / 2.0
+        MADC = self._calculate_data_driven_measure(full_cossim_matrix, correction=True)
 
         # Print the shape of distance matries, make sure equal
-        #print(DCD.shape, FCD.shape) # shape=(n_clients, n_clients)
+        #print(EDC.shape, MADC.shape) # shape=(n_clients, n_clients)
 
         iu = np.triu_indices(n_clients)
-        x, y = DCD[iu], FCD[iu]
+        x, y = EDC[iu], MADC[iu]
         mesh_points = np.vstack((x,y)).T
 
         #print(x.shape, y.shape)
