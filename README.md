@@ -2,7 +2,17 @@
 
 The source code of the Arxiv preprint article:
 
-[FedGroup: Ternary Cosine Similarity-based Clustered Federated Learning Framework toward High Accuracy in Heterogeneous Data](https://arxiv.org/abs/2010.06870)
+[FedGroup: Accurate Federated Learning via Decomposed Similarity-Based Clustering](https://arxiv.org/abs/2010.06870)
+
+>NOTE: The code base of FedGroup is [FedProx](https://github.com/litian96/FedProx).
+
+# Overview
+FedGroup can simulate following (Clustered) Federated Learning framework:
+- FedAvg & FedSGD -> [Communication-Efficient Learning of Deep Networks from Decentralized Data](http://proceedings.mlr.press/v54/mcmahan17a.html)
+- FedProx -> [Federated optimization in heterogeneous networks](https://arxiv.org/abs/1812.06127)
+- FedGrop & FedGrouProx -> [FedGroup: Accurate Federated Learning via Decomposed Similarity-Based Clustering](https://arxiv.org/abs/2010.06870)
+- IFCA -> [An Efficient Framework for Clustered Federated Learning](https://proceedings.neurips.cc/paper/2020/hash/e32cc80bf07915058ce90722ee17bb71-Abstract.html)
+- FeSEM -> [Multi-center federated learning](https://arxiv.org/abs/2005.01026) 
 
 # Requirement
 Python packages:
@@ -12,7 +22,7 @@ Python packages:
 - matplotlib
 - tqdm
  
- You need to download the dataset (e.g. FEMNIST, MNIST, Sent140, Synthetic) and specify a GPU id follow the guidelines of [FedProx](https://github.com/litian96/FedProx).
+>>You need to download the dataset (e.g. FEMNIST, MNIST, Sent140, Synthetic) and specify a GPU id follow the guidelines of [FedProx](https://github.com/litian96/FedProx).
 
 The directory structure of the datasets should look like this:
 
@@ -27,6 +37,7 @@ GrouProx-->data-->mnist-->data-->train--> ***train.json
                |
                ...
 ```
+
 # Quick Start
 Just run `GrouProx_notebook.ipynb`.
 
@@ -80,6 +91,11 @@ if params['optimizer']  == 'grouprox':
 
   # The Group may be empty if True
   params['allow_empty'] = True
+  
+  # We implement IFCA and FeSEM base on grouprox
+  # Set 'ifca' or 'fesem' to True to enable it. 
+  params['ifca'] = False
+  params['fesem'] = False
 
 ```
 # Experimental Results
@@ -88,12 +104,12 @@ All evaluation results will save in the `GrouProx-->results-->...` directory as 
 # Reference
 Please cite the preprint version of `FedGroup` if the code helped your research 😊
 
-- [FedGroup: Ternary Cosine Similarity-based Clustered Federated Learning Framework toward High Accuracy in Heterogeneous Data](https://arxiv.org/abs/2010.06870)
+- [FedGroup: Accurate Federated Learning via Decomposed Similarity-Based Clustering](https://arxiv.org/abs/2010.06870)
 
 BibTeX
 ```
 @article{duan2020fedgroup,
-  title={FedGroup: Ternary Cosine Similarity-based Clustered Federated Learning Framework toward High Accuracy in Heterogeneous Data},
+  title={FedGroup: Accurate Federated Learning via Decomposed Similarity-Based Clustering},
   author={Duan, Moming and Liu, Duo and Ji, Xinyuan and Liu, Renping and Liang, Liang and Chen, Xianzhang and Tan, Yujuan},
   journal={arXiv preprint arXiv:2010.06870},
   year={2020}
