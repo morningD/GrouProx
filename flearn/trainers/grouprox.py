@@ -39,6 +39,9 @@ class Server(BaseFedarated):
         self.RAC = params['RAC'] # Randomly Assign Clients
         self.RCC = params['RCC'] # Random Cluster Center
         self.MADC = params['MADC'] # Use Mean Absolute Difference of pairwise Cossim
+        self.recluster_epoch = params['recluster_epoch']
+        self.max_temp = params['client_temp']
+        self.temp_dict = {}
 
         """
         We implement THREE run mode of FedGroup: 
@@ -63,6 +66,9 @@ class Server(BaseFedarated):
         self.latest_update = self.client_model.get_params()
 
         self.create_groups()
+
+        # Record the temperature of clients
+        for c in self.clients: self.temp_dict[c] = self.max_temp
 
         self.writer = CSVWriter(params['export_filename'], 'results/'+params['dataset'], self.group_ids)
 
@@ -142,7 +148,7 @@ class Server(BaseFedarated):
             start_model = self.client_model.get_params() # Backup the model first
             self.client_model.set_params(self.latest_model) # Set the training model to global avg model
             
-            #client_model, client_update = self.pre_train_client(client) 
+            # client_model, client_update = self.pre_train_client(client) 
             diff_list, assign_group = self.get_assign_group(client, run_mode)
 
             # update(Init) the diff list of client
@@ -183,12 +189,11 @@ class Server(BaseFedarated):
                 # Init groups accroding to the clustering results
                 for g, id in zip(self.group_list, cluster.keys()):
                     # Init the group latest update
-                    new_model = cluster[id][0]
-                    g.latest_update = [w1-w0 for w0, w1 in zip(g.latest_model, new_model)]
-                    g.latest_model = new_model
+                    g.latest_update = cluster[id][1]
+                    g.latest_model = cluster[id][0]
                     # These clients do not need to be cold-started
                     # Set the "group" attr of client only, didn't add the client to group
-                    for c in cluster[id][1]: c.set_group(g)
+                    for c in cluster[id][2]: c.set_group(g)
 
         # Strategy #3: random initialize group models as centers
         # <IFCA> and <FeSEM> use this strategy.
@@ -220,11 +225,61 @@ class Server(BaseFedarated):
         
         return
 
-    """ Clustering clients by SpectralClustering"""
+    """ Recluster the clients then refresh the group's optimize goal,
+        It is a dynamic clustering strategy of FedGroup.
+        Probelm of recluster strategy: the personality of group model will be weaken.
+    """
+    def group_recluster(self):
+        if self.run_mode != 'FedGroup':
+            return
+        if self.RCC == True:
+            print("Warning: The random cluster center strategy conflicts with dynamic clustering strategy.")
+            return
+        
+        # Select alpha*num_group warm clients for reclustering. 
+        alpha = 20
+        warm_clients = [c for c in self.clients if c.is_cold() == False ]
+        selected_clients = random.sample(warm_clients, k=min(self.num_group*alpha, len(warm_clients)))
+        # Clear the clustering flage of warm clients
+        for c in warm_clients: c.clustering, c.group = False, None
+        for c in selected_clients: c.clustering = True
+
+        # Recluster the selected clients
+        cluster = self.clustering_clients(selected_clients) # {Cluster ID: (cm, [c1, c2, ...])}
+        # Init groups accroding to the clustering results
+        for g, id in zip(self.group_list, cluster.keys()):
+            # Init the group latest update
+            g.latest_update = cluster[id][1]
+            g.latest_model = cluster[id][0]
+            # These clients do not need to be cold-started
+            # Set the "group" attr of client only, didn't add the client to group
+            for c in cluster[id][2]: c.set_group(g)
+
+        # Fresh the global AVG model
+        self.refresh_global_model(self.group_list)
+
+        # *Cold start the original warm clients for evaluation
+        for c in warm_clients:
+            if c.is_cold() == True:
+                self.client_cold_start(c, run_mode='FedGroup')
+        return
+
+    def reassign_warm_clients(self):
+        warm_clients = [c for c in self.clients if c.is_cold() == False]
+        for c in warm_clients:
+            c.group = None
+            self.client_cold_start(c, self.run_mode)
+        return
+
+    """ Clustering clients by Clustering Algorithm """
     def clustering_clients(self, clients, n_clusters=None, max_iter=20):
         if n_clusters is None: n_clusters = self.num_group
         # Pre-train these clients first
         csolns, cupdates = {}, {}
+        
+        # The updates for clustering must be calculated upon a same model
+        # We use the global auxiliary(AVG) model as start point
+        self.client_model.set_params(self.latest_model)
 
         # Record the execution time
         start_time = time.time()
@@ -292,7 +347,7 @@ class Server(BaseFedarated):
         print('Clustering Results:', Counter(result.labels_))
         #print('Clustering Inertia:', result.inertia_)
 
-        cluster = {} # {Cluster ID: (cm, [c1, c2, ...])}
+        cluster = {} # {Cluster ID: (avg_soln, avg_update, [c1, c2, ...])}
         cluster2clients = [[] for _ in range(n_clusters)] # [[c1, c2,...], [c3, c4,...], ...]
         for idx, cluster_id in enumerate(result.labels_):
             #print(idx, cluster_id, len(cluster2clients), n_clusters) # debug
@@ -300,10 +355,11 @@ class Server(BaseFedarated):
         for cluster_id, client_list in enumerate(cluster2clients):
             # calculate the means of cluster
             # All client have equal weight
-            weighted_csolns = [(1, csolns[c]) for c in client_list]
-            if weighted_csolns:
+            average_csolns = [(1, csolns[c]) for c in client_list]
+            average_updates = [(1, cupdates[c]) for c in client_list]
+            if average_csolns:
                 # Update the cluster means
-                cluster[cluster_id] = (self.aggregate(weighted_csolns), client_list)
+                cluster[cluster_id] = (self.aggregate(average_csolns), self.aggregate(average_updates), client_list)
             else:
                 print("Error, cluster is empty")
 
@@ -345,17 +401,24 @@ class Server(BaseFedarated):
         
         return average_diffs
 
-    """ Pre-train the client 1 epoch and return weights """
+    """ Pre-train the client 1 epoch and return weights,
+        Train the client upon the global AVG model.
+    """
     def pre_train_client(self, client):
-        start_model = client.get_params() # Backup the start model
+        start_model = self.client_model.get_params() # Backup the start model
+        self.client_model.set_params(self.latest_model) # Set the run model to the global AVG model
         if self.prox == True:
             # Set the value of vstart to be the same as the client model to remove the proximal term
-            self.inner_opt.set_params(self.client_model.get_params(), self.client_model)
-        soln, stat = client.solve_inner() # Pre-train the client only one epoch
-        ws = soln[1] # weights of model
-        updates = [w1-w0 for w0, w1 in zip(start_model, ws)]
+            self.inner_opt.set_params(self.latest_model, self.client_model)
+        # Pretrain 1 epoch
+        #soln, stat = client.solve_inner() # Pre-train the client only one epoch
+        # or Pretrain 20 iterations
+        soln, stat = client.solve_iters(50)
 
-        client.set_params(start_model) # Recovery the model
+        ws = soln[1] # weights of model
+        updates = [w1-w0 for w0, w1 in zip(self.latest_model, ws)]
+
+        self.client_model.set_params(start_model) # Recovery the model
         return ws, updates
 
     def get_not_empty_groups(self):
@@ -430,6 +493,11 @@ class Server(BaseFedarated):
             
             # Reshcedule selected clients to groups, add client to group's client list
             if self.run_mode == 'FedGroup':
+                # Cold start the newcomer
+                for c in selected_clients:
+                    if c.is_cold() == True:
+                        self.client_cold_start(c, self.run_mode)
+                # Reschedule the group
                 self.reschedule_groups(selected_clients, self.allow_empty, self.evenly, self.RAC)
             else: # IFCA and FeSEM need rescheduling client in each round
                 start_time = time.time()
@@ -528,10 +596,21 @@ class Server(BaseFedarated):
             # Refresh the global model and global delta weights (latest_update)
             self.refresh_global_model(self.group_list)
 
+            ##########  Dynamic Strategy Code Start ##########
+            # Recluster group, dynamic strategy
+            if self.recluster_epoch:
+                if i > 0 and i % self.recluster_epoch == 0:
+                    print(f"***** Recluster groups in epoch {i} ******")
+                    self.group_recluster()
+
+            # Fresh the temperature of client
+            if self.max_temp:
+                self.refresh_client_temperature(cmodels)
+            ##########  Dynamic Strategy Code End ##########
+
         # Close the writer and end the training
         self.writer.close()
 
-    
     # Use for matain the global AVG model and global latest update
     def refresh_global_model(self, groups):
         start_model = self.latest_model 
@@ -544,6 +623,30 @@ class Server(BaseFedarated):
         self.latest_model = new_model
 
         return
+
+    def refresh_client_temperature(self, cmodels):
+        self.temp_dict
+        # Strategy1: Discrepancy-based
+        diffs = self.measure_client_group_diffs()
+        avg_total_diff = diffs[0]
+        avg_group_diff = {g:diffs[idx+1] for idx, g in enumerate(self.group_list)}
+        for c, model in cmodels.items():
+            mean_diff = avg_group_diff[c.group]
+            model_g = process_grad(c.group.latest_model)
+            model_c = process_grad(model)
+            client_diff = np.sum((model_c-model_g)**2)**0.5
+            
+            if client_diff > mean_diff:
+                # This client has large discrepancy
+                self.temp_dict[c] = self.temp_dict[c] - 1
+            if self.temp_dict[c] == 0:
+                # Redo the cold start
+                old_group = c.group
+                c.group = None
+                self.client_cold_start(c, run_mode='FedGroup')
+                self.temp_dict[c] = self.max_temp
+                if old_group != c.group:
+                    print(f'Client {c.id} migrates from Group {old_group.id} to Group {c.group.id}!')
 
     def aggregate_groups(self, groups, agg_lr):
         gsolns = [(sum(g.num_samples), g.latest_model) for g in groups]
@@ -564,7 +667,9 @@ class Server(BaseFedarated):
                 for k, v in enumerate(gsoln):
                     base[k] += weights[j]*v.astype(np.float64)
             averaged_soln = [v / total_weights for v in base]
-            g.latest_update = [w1-w0 for w0, w1 in zip(g.latest_model, averaged_soln)]
+            # Note: The latest_update accumulated from last fedavg training
+            inter_aggregation_update = [w1-w0 for w0, w1 in zip(g.latest_model, averaged_soln)]
+            g.latest_update = [up0+up1 for up0, up1 in zip(g.latest_update, inter_aggregation_update)]
             g.latest_model = averaged_soln
 
         return
@@ -768,8 +873,8 @@ class Server(BaseFedarated):
 
         # random selecte alpha * m clients to calculate the direction matrix V
         n_clients = len(self.clients)
-        clustering_clients = random.sample(self.clients, k=min(self.num_group*alpha, n_clients))
-        clustering_update_array = [process_grad(cupdates[c]) for c in clustering_clients]
+        selected_clients = random.sample(self.clients, k=min(self.num_group*alpha, n_clients))
+        clustering_update_array = [process_grad(cupdates[c]) for c in selected_clients]
         clustering_update_array = np.vstack(clustering_update_array).T # shape=(n_params, n_clients)
         
         # We decomposed the update vectors to numer_group components.

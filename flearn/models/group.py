@@ -149,6 +149,6 @@ class Group(object):
 
         self.client_model.set_params(start_model) # Recovery the training model
 
-        return cmodels_dict, cupdates_dict # return {Client:updates} to server
+        return cmodels_dict, cupdates_dict # return {Client:model} {Client:updates} to server
 
 
