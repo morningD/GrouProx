@@ -10,7 +10,7 @@ The source code of the Arxiv preprint article:
 FedGroup can simulate following (Clustered) Federated Learning framework:
 - FedAvg & FedSGD -> [Communication-Efficient Learning of Deep Networks from Decentralized Data](http://proceedings.mlr.press/v54/mcmahan17a.html)
 - FedProx -> [Federated optimization in heterogeneous networks](https://arxiv.org/abs/1812.06127)
-- FedGrop & FedGrouProx -> [FedGroup: Accurate Federated Learning via Decomposed Similarity-Based Clustering](https://arxiv.org/abs/2010.06870)
+- FedGrop & FedGrouProx -> [FedGroup: Efficient Federated Learning via Decomposed Similarity-Based Clustering](https://arxiv.org/abs/2010.06870)
 - IFCA -> [An Efficient Framework for Clustered Federated Learning](https://proceedings.neurips.cc/paper/2020/hash/e32cc80bf07915058ce90722ee17bb71-Abstract.html)
 - FeSEM -> [Multi-center federated learning](https://arxiv.org/abs/2005.01026) 
 
