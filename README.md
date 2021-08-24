@@ -6,6 +6,8 @@ The source code of the Arxiv preprint article:
 
 >NOTE: The code base of FedGroup is [FedProx](https://github.com/litian96/FedProx).
 
+### 🎁 Why not try the wholly new [FlexCFL](https://github.com/morningD/FlexCFL), which added many exciting improvements and technical fixes.
+
 # Overview
 FedGroup can simulate following (Clustered) Federated Learning framework:
 - FedAvg & FedSGD -> [Communication-Efficient Learning of Deep Networks from Decentralized Data](http://proceedings.mlr.press/v54/mcmahan17a.html)
