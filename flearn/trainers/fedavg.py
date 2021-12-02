@@ -23,12 +23,15 @@ class Server(BaseFedarated):
         # Evalute model before training
         for i in range(self.num_rounds):
 
-            diffs = [0] # Record the client diff
+            indices, selected_clients = self.select_clients(i, num_clients=self.clients_per_round)  # uniform sampling
+            np.random.seed(i)
+            active_clients = np.random.choice(selected_clients, round(self.clients_per_round * (1-self.drop_percent)), replace=False)
 
+            diffs = [0] # Record the client diff
             # test model
             if i % self.eval_every == 0:
                 stats = self.test()  # have set the latest model for all clients
-                stats_train = self.train_error_and_loss()
+                stats_train = self.train_error_and_loss(active_clients)
                 
                 test_acc = np.sum(stats[3]) * 1.0 / np.sum(stats[2])
                 tqdm.write('At round {} accuracy: {}'.format(i, test_acc))  # testing accuracy
@@ -48,10 +51,6 @@ class Server(BaseFedarated):
                     diffs[0] = diffs[0] / len(csolns)
                 self.writer.write_diffs(diffs)
                 tqdm.write('At round {} Discrepancy: {}'.format(i, diffs[0]))
-
-            indices, selected_clients = self.select_clients(i, num_clients=self.clients_per_round)  # uniform sampling
-            np.random.seed(i)
-            active_clients = np.random.choice(selected_clients, round(self.clients_per_round * (1-self.drop_percent)), replace=False)
 
             csolns = [] # Reset the client solutions buffer
             for idx, c in enumerate(active_clients.tolist()):  # simply drop the slow devices

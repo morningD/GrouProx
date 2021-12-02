@@ -41,19 +41,20 @@ class BaseFedarated(object):
         all_clients = [Client(u, g, train_data[u], test_data[u], model) for u, g in zip(users, groups)]
         return all_clients
 
-    def train_error_and_loss(self):
+    def train_error_and_loss(self, clients=None):
+        if clients is None: clients = self.clients
         num_samples = []
         tot_correct = []
         losses = []
 
-        for c in self.clients:
+        for c in clients:
             ct, cl, ns = c.train_error_and_loss() 
             tot_correct.append(ct*1.0)
             num_samples.append(ns)
             losses.append(cl*1.0)
         
-        ids = [c.id for c in self.clients]
-        groups = [c.group for c in self.clients]
+        ids = [c.id for c in clients]
+        groups = [c.group for c in clients]
 
         return ids, groups, num_samples, tot_correct, losses
 

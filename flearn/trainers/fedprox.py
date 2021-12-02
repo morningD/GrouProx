@@ -24,12 +24,15 @@ class Server(BaseFedarated):
 
         for i in range(self.num_rounds):
 
-            diffs = [0] # Record the client diff
+            indices, selected_clients = self.select_clients(i, num_clients=self.clients_per_round)  # uniform sampling
+            np.random.seed(i)  # make sure that the stragglers are the same for FedProx and FedAvg
+            active_clients = np.random.choice(selected_clients, round(self.clients_per_round * (1 - self.drop_percent)), replace=False)
 
+            diffs = [0] # Record the client diff
             # test model
             if i % self.eval_every == 0:
                 stats = self.test() # have set the latest model for all clients
-                stats_train = self.train_error_and_loss()
+                stats_train = self.train_error_and_loss(active_clients)
 
                 test_acc = np.sum(stats[3]) * 1.0 / np.sum(stats[2])
                 tqdm.write('At round {} accuracy: {}'.format(i, test_acc))  # testing accuracy
@@ -69,12 +72,7 @@ class Server(BaseFedarated):
             difference = difference * 1.0 / len(self.clients)
             tqdm.write('gradient difference: {}'.format(difference))
 
-            indices, selected_clients = self.select_clients(i, num_clients=self.clients_per_round)  # uniform sampling
-            np.random.seed(i)  # make sure that the stragglers are the same for FedProx and FedAvg
-            active_clients = np.random.choice(selected_clients, round(self.clients_per_round * (1 - self.drop_percent)), replace=False)
-
             csolns = [] # buffer for receiving client solutions
-
             self.inner_opt.set_params(self.latest_model, self.client_model)
 
             for idx, c in enumerate(selected_clients.tolist()):
@@ -100,6 +98,7 @@ class Server(BaseFedarated):
             # update models
             self.latest_model = self.aggregate(csolns)
             self.client_model.set_params(self.latest_model)
+
         self.writer.close()
 
         # final test model

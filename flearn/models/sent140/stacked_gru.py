@@ -62,9 +62,9 @@ class Model(object):
         embs = tf.Variable(self.emb_arr, dtype=tf.float32, trainable=False)
         x = tf.nn.embedding_lookup(embs, features)
         
-        stacked_lstm = rnn.MultiRNNCell(
-            [rnn.BasicLSTMCell(64), rnn.BasicLSTMCell(32)])
-        outputs, _ = tf.nn.dynamic_rnn(stacked_lstm, x, dtype=tf.float32)
+        stacked_gru = rnn.MultiRNNCell(
+            [rnn.GRUCell(64), rnn.GRUCell(32)])
+        outputs, _ = tf.nn.dynamic_rnn(stacked_gru, x, dtype=tf.float32)
         fc1 = tf.layers.dense(inputs=outputs[:,-1,:], units=64)
         pred = tf.squeeze(tf.layers.dense(inputs=fc1, units=1))
         

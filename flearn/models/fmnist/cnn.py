@@ -9,59 +9,68 @@ from flearn.utils.tf_utils import process_grad
 
 
 class Model(object):
-    '''
-    Assumes that images are 28px by 28px
-    '''
-    
     def __init__(self, num_classes, optimizer, seed=1):
-
         # params
         self.num_classes = num_classes
 
-        # create computation graph        
+        # create computation graph
         self.graph = tf.Graph()
         with self.graph.as_default():
-            tf.set_random_seed(123+seed)
+            tf.set_random_seed(123 + seed)
             self.features, self.labels, self.train_op, self.grads, self.eval_metric_ops, self.loss = self.create_model(optimizer)
             self.saver = tf.train.Saver()
-        self.sess = tf.Session(graph=self.graph)
+
+        config = tf.ConfigProto()
+        config.gpu_options.allow_growth = True
+        self.sess = tf.Session(graph=self.graph, config=config)
 
         # find memory footprint and compute cost of the model
-        self.size = graph_size(self.graph) # var_num * bytes_size
+        self.size = graph_size(self.graph)
         with self.graph.as_default():
             self.sess.run(tf.global_variables_initializer())
             metadata = tf.RunMetadata()
             opts = tf.profiler.ProfileOptionBuilder.float_operation()
             self.flops = tf.profiler.profile(self.graph, run_meta=metadata, cmd='scope', options=opts).total_float_ops
-    
+
     def create_model(self, optimizer):
-        """Model function for Logistic Regression."""
+        """Model function for CNN."""
         features = tf.placeholder(tf.float32, shape=[None, 784], name='features')
-        labels = tf.placeholder(tf.int64, shape=[None,], name='labels')
-        images = tf.reshape(features, shape=[tf.shape(features)[0], 28, 28, 1])
-        conv1 = tf.layers.conv2d(inputs=images, filters=32, kernel_size=3, activation=tf.nn.relu)
-        conv2 = tf.layers.conv2d(inputs=conv1, filters=32, kernel_size=3, activation=tf.nn.relu)
-        conv3 = tf.layers.conv2d(inputs=conv2, filters=32, kernel_size=5, strides=2, activation=tf.nn.relu)
-        drop1 = tf.layers.dropout(inputs=conv3, rate=0.4)
-        conv4 = tf.layers.conv2d(inputs=drop1, filters=64, kernel_size=3, activation=tf.nn.relu)
-        conv5 = tf.layers.conv2d(inputs=conv4, filters=64, kernel_size=3, activation=tf.nn.relu)
-        conv6 = tf.layers.conv2d(inputs=conv5, filters=64, kernel_size=5, strides=2, activation=tf.nn.relu)
-        drop2 = tf.layers.dropout(inputs=conv6, rate=0.4)
+        labels = tf.placeholder(tf.int64, shape=[None, ], name='labels')
+        output2 = tf.placeholder(tf.float32, shape=[None, self.num_classes], name='output2')
+        input_layer = tf.reshape(features, [-1, 28, 28, 1])
+        conv1 = tf.layers.conv2d(
+          inputs=input_layer,
+          filters=32,
+          kernel_size=[5, 5],
+          padding="same",
+          activation=tf.nn.relu)
+        pool1 = tf.layers.max_pooling2d(inputs=conv1, pool_size=[2, 2], strides=2)
+        conv2 = tf.layers.conv2d(
+            inputs=pool1,
+            filters=64,
+            kernel_size=[5, 5],
+            padding="same",
+            activation=tf.nn.relu)
+        pool2 = tf.layers.max_pooling2d(inputs=conv2, pool_size=[2, 2], strides=2)
+        pool2_flat = tf.reshape(pool2, [-1, 7 * 7 * 64])
+        dense = tf.layers.dense(inputs=pool2_flat, units=1024, activation=tf.nn.relu)
 
-        conv6_flatten = tf.layers.flatten(drop2)
-        fc2 = tf.layers.dense(inputs=conv6_flatten, units=128, activation=tf.nn.relu, kernel_regularizer=tf.keras.regularizers.l2(0.001))
-        drop3 = tf.layers.dropout(inputs=fc2, rate=0.4)
-        logits = tf.layers.dense(inputs=drop3, units=self.num_classes, kernel_regularizer=tf.keras.regularizers.l2(0.001))
+        logits = tf.layers.dense(inputs=dense, units=self.num_classes)
         predictions = {
-            "classes": tf.argmax(input=logits, axis=1),
-            "probabilities": tf.nn.softmax(logits, name="softmax_tensor")
-            }
+          "classes": tf.argmax(input=logits, axis=1),
+          "probabilities": tf.nn.softmax(logits, name="softmax_tensor")
+        }
         loss = tf.losses.sparse_softmax_cross_entropy(labels=labels, logits=logits)
-
         grads_and_vars = optimizer.compute_gradients(loss)
         grads, _ = zip(*grads_and_vars)
         train_op = optimizer.apply_gradients(grads_and_vars, global_step=tf.train.get_global_step())
         eval_metric_ops = tf.count_nonzero(tf.equal(labels, predictions["classes"]))
+
+
+        kl_loss = tf.keras.losses.KLD(predictions['probabilities'], output2) + tf.keras.losses.KLD(output2, predictions['probabilities'])
+        kl_grads_and_vars = optimizer.compute_gradients(kl_loss)
+        kl_grads, _ = zip(*kl_grads_and_vars)
+
         return features, labels, train_op, grads, eval_metric_ops, loss
 
     def set_params(self, model_params=None):

@@ -5,7 +5,7 @@ from tqdm import trange
 #from tensorflow.contrib import rnn
 # Migrate to TF2
 import tensorflow.compat.v1 as tf
-tf.disable_v2_behavior()
+#tf.disable_v2_behavior()
 import tensorflow.compat.v1.nn.rnn_cell as rnn
 
 from flearn.utils.model_utils import batch_data, batch_data_multiple_iters
@@ -62,10 +62,14 @@ class Model(object):
         embs = tf.Variable(self.emb_arr, dtype=tf.float32, trainable=False)
         x = tf.nn.embedding_lookup(embs, features)
         
+        forward_cell1, backward_cell1  = rnn.BasicGRUCell(64), rnn.BasicGRUCell(64)
+        forward_cell2, backward_cell2  = rnn.BasicGRUCell(32), rnn.BasicGRUCell(32)
+        (birnn_fw1, birnn_bw1), _, _ = dynamic_birnn(forward_cell1, backward_cell1, x, dtype=tf.float32)
+        print("shape:", birnn_fw1.shape, birnn_bw1.shape)
         stacked_lstm = rnn.MultiRNNCell(
-            [rnn.BasicLSTMCell(64), rnn.BasicLSTMCell(32)])
+            [rnn.BasicLSTMCell(self.n_hidden) for _ in range(2)])
         outputs, _ = tf.nn.dynamic_rnn(stacked_lstm, x, dtype=tf.float32)
-        fc1 = tf.layers.dense(inputs=outputs[:,-1,:], units=64)
+        fc1 = tf.layers.dense(inputs=outputs[:,-1,:], units=30)
         pred = tf.squeeze(tf.layers.dense(inputs=fc1, units=1))
         
         loss = tf.losses.sigmoid_cross_entropy(multi_class_labels=labels, logits=pred)

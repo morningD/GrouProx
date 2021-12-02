@@ -3,16 +3,12 @@ import tensorflow.compat.v1 as tf
 tf.disable_v2_behavior()
 from tqdm import trange
 
-from flearn.utils.model_utils import batch_data, batch_data_multiple_iters
+from flearn.utils.model_utils import batch_data, gen_batch
 from flearn.utils.tf_utils import graph_size
 from flearn.utils.tf_utils import process_grad
 
 
-class Model(object):
-    '''
-    Assumes that images are 28px by 28px
-    '''
-    
+class Model(object):    
     def __init__(self, num_classes, optimizer, seed=1):
 
         # params
@@ -22,7 +18,7 @@ class Model(object):
         self.graph = tf.Graph()
         with self.graph.as_default():
             tf.set_random_seed(123+seed)
-            self.features, self.labels, self.train_op, self.grads, self.eval_metric_ops, self.loss = self.create_model(optimizer)
+            self.features, self.labels, self.train_op, self.grads, self.eval_metric_ops, self.loss, self.predictions = self.create_model(optimizer)
             self.saver = tf.train.Saver()
         self.sess = tf.Session(graph=self.graph)
 
@@ -33,24 +29,23 @@ class Model(object):
             metadata = tf.RunMetadata()
             opts = tf.profiler.ProfileOptionBuilder.float_operation()
             self.flops = tf.profiler.profile(self.graph, run_meta=metadata, cmd='scope', options=opts).total_float_ops
-    
+
     def create_model(self, optimizer):
         """Model function for Logistic Regression."""
-        features = tf.placeholder(tf.float32, shape=[None, 784], name='features')
-        labels = tf.placeholder(tf.int64, shape=[None,], name='labels')
-        logits = tf.layers.dense(inputs=features, units=self.num_classes, kernel_regularizer=tf.keras.regularizers.l2(0.001))
-        predictions = {
-            "classes": tf.argmax(input=logits, axis=1),
-                "probabilities": tf.nn.softmax(logits, name="softmax_tensor")
-            }
-        loss = tf.losses.sparse_softmax_cross_entropy(labels=labels, logits=logits, \
-            reduction=tf.losses.Reduction.MEAN)
+        features = tf.placeholder(tf.float32, shape=[None, 100], name='features')
+        labels = tf.placeholder(tf.float32, shape=[None, 1], name='labels')
+        
+        W = tf.Variable(tf.zeros([100, 1]))
+        b = tf.Variable(tf.zeros([1]))
+        y_pred = tf.matmul(features, W) + b
+
+        loss = 0.01 * tf.reduce_sum(tf.square(W)) + tf.reduce_mean(tf.maximum(tf.zeros_like(labels), 1 - labels * y_pred))
 
         grads_and_vars = optimizer.compute_gradients(loss)
         grads, _ = zip(*grads_and_vars)
         train_op = optimizer.apply_gradients(grads_and_vars, global_step=tf.train.get_global_step())
-        eval_metric_ops = tf.count_nonzero(tf.equal(labels, predictions["classes"]))
-        return features, labels, train_op, grads, eval_metric_ops, loss
+        eval_metric_ops = tf.count_nonzero(tf.equal(labels, tf.sign(y_pred)))
+        return features, labels, train_op, grads, eval_metric_ops, loss, tf.sign(y_pred)
 
     def set_params(self, model_params=None):
         if model_params is not None:
@@ -75,26 +70,30 @@ class Model(object):
             grads = process_grad(model_grads)
 
         return num_samples, grads
+
+    def get_loss(self, data):
+        with self.graph.as_default():
+            loss = self.sess.run(self.loss, feed_dict={self.features: data['x'], self.labels: data['y']})
+        return loss
     
     def solve_inner(self, data, num_epochs=1, batch_size=32):
         '''Solves local optimization problem'''
-        for _ in trange(num_epochs, desc='Epoch: ', leave=False, ncols=120):
+        for _ in range(num_epochs):
             for X, y in batch_data(data, batch_size):
                 with self.graph.as_default():
-                    self.sess.run(self.train_op, feed_dict={self.features: X, self.labels: y})
+                    _, pred = self.sess.run([self.train_op, self.predictions],
+                        feed_dict={self.features: X, self.labels: y})
         soln = self.get_params()
         comp = num_epochs * (len(data['y'])//batch_size) * batch_size * self.flops
         return soln, comp
 
-    def solve_iters(self, data, num_iters=1, batch_size=32):
-        '''Solves local optimization problem'''
+    def solve_sgd(self, mini_batch_data):
+        with self.graph.as_default():
+            grads, loss, _ = self.sess.run([self.grads, self.loss, self.train_op],
+                                    feed_dict={self.features: mini_batch_data[0], self.labels: mini_batch_data[1]})
 
-        for X, y in batch_data_multiple_iters(data, batch_size, num_iters):
-            with self.graph.as_default():
-                self.sess.run(self.train_op, feed_dict={self.features: X, self.labels: y})
-        soln = self.get_params()
-        comp = 0
-        return soln, comp
+        weights = self.get_params()
+        return grads, loss, weights
     
     def test(self, data):
         '''
@@ -108,10 +107,3 @@ class Model(object):
     
     def close(self):
         self.sess.close()
-
-    def reinitialize_params(self, seed):
-        tf.set_random_seed(seed)
-        with self.graph.as_default():
-            self.sess.run(tf.global_variables_initializer())
-            model_params = self.get_params()
-        return model_params
