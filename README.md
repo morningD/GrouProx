@@ -2,11 +2,7 @@
 
 The source code of the Arxiv preprint article:
 
-<<<<<<< HEAD
-[FedGroup: Efficient Federated Learning via Decomposed Similarity-Based Clustering](https://arxiv.org/abs/2010.06870)
-=======
 [FedGroup: Efficient Clustered Federated Learning via Decomposed Data-Driven Measure](https://arxiv.org/abs/2010.06870)
->>>>>>> 829689799bc9ef7e4decd9d50eaa81216952776b
 
 >NOTE: The code base of FedGroup is [FedProx](https://github.com/litian96/FedProx).
 
@@ -110,11 +106,7 @@ All evaluation results will save in the `GrouProx-->results-->...` directory as 
 # Reference
 Please cite the preprint version of `FedGroup` if the code helped your research 😊
 
-<<<<<<< HEAD
-- [FedGroup: Efficient Federated Learning via Decomposed Similarity-Based Clustering](https://arxiv.org/abs/2010.06870)
-=======
 - [FedGroup: Efficient Clustered Federated Learning via Decomposed Data-Driven Measure](https://arxiv.org/abs/2010.06870)
->>>>>>> 829689799bc9ef7e4decd9d50eaa81216952776b
 
 BibTeX
 ```
